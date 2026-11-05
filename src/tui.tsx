@@ -1,3 +1,5 @@
+/** @jsxRuntime automatic */
+/** @jsxImportSource @opentui/solid */
 import { createSignal, For, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { Files } from "./rpc.js"

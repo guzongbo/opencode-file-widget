@@ -1,6 +1,6 @@
 {
   "name": "opencode-file-widget",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenCode V2 file widget: upload local files, download server files with /download, and manage transfer settings and history.",
   "type": "module",
   "license": "MIT",
@@ -32,7 +32,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "package.json"
+    "package.json",
+    "tsconfig.json"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
