@@ -1077,6 +1077,8 @@ function FilesWidget(props: {
 
   return (
     <box flexDirection="column" gap={1}>
+      <text fg={COLOR_DIVIDER}>{"─".repeat(30)}</text>
+
       <box flexDirection="row" justifyContent="space-between">
         <text>📦 文件传输</text>
         <box onMouseUp={openFileSettings}>
@@ -1112,8 +1114,6 @@ function FilesWidget(props: {
             : "还没有上传文件"}
         </text>
       </box>
-
-      <text fg={COLOR_DIVIDER}>{"─".repeat(30)}</text>
 
       <Show when={props.settings.showRecent ?? true}>
         <box flexDirection="column" gap={1}>
