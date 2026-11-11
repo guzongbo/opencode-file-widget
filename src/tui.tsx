@@ -205,8 +205,23 @@ async function record(update: HistoryUpdate, item: HistoryItem) {
 /* Download                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function message(error: unknown) {
-  return error instanceof Error ? error.message : String(error)
+function message(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  if (!error || typeof error !== "object") return String(error)
+  const source = error as { message?: unknown; error?: unknown; cause?: unknown }
+  for (const value of [source.message, source.error, source.cause]) {
+    if (value === undefined || value === error) continue
+    const text = message(value)
+    if (text && text !== "[object Object]") return text
+  }
+  try {
+    const text = JSON.stringify(error)
+    if (text && text !== "{}") return text
+  } catch {
+    // fall back to String below
+  }
+  return String(error)
 }
 
 function truncate(value: string, max: number) {

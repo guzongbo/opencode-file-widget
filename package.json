@@ -1,6 +1,6 @@
 {
   "name": "opencode-file-widget",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "OpenCode V2 file widget: upload local files, download server files with /download, and manage transfer settings and history.",
   "type": "module",
   "license": "MIT",
