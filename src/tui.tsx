@@ -1,22 +1,23 @@
 /** @jsxRuntime automatic */
 /** @jsxImportSource @opentui/solid */
-import { createSignal, For, Show } from "solid-js"
+import { createEffect, createSignal, For, Show } from "solid-js"
 import { Plugin } from "@opencode/plugin/tui"
 import { Files } from "./rpc.js"
 import { execFile, execFileSync } from "node:child_process"
 import { promisify } from "node:util"
-import { access, mkdir, readFile, writeFile } from "node:fs/promises"
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path"
 import { randomUUID } from "node:crypto"
 
 type Direction = "upload" | "download"
-type HistoryStatus = "success" | "error"
+type HistoryStatus = "pending" | "success" | "error"
 
 type HistoryItem = {
   id: string
   direction: Direction
   status?: HistoryStatus
+  phase?: string
   name: string
   serverPath: string
   localPath?: string
@@ -75,9 +76,11 @@ const COLOR_UPLOAD = "#7fd88f"
 const COLOR_DOWNLOAD = "#5c9cf5"
 const COLOR_SUCCESS = "#7fd88f"
 const COLOR_ERROR = "#f56c6c"
+const COLOR_PENDING = "#fbbf24"
 const COLOR_MUTED = "#9ca3af"
 const COLOR_DIVIDER = "#4b5563"
-const COLOR_UPLOAD_BG = "#1e3a5f"
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 function succeeded(item: HistoryItem) {
   return (item.status ?? "success") === "success"
@@ -196,8 +199,13 @@ function revealInFileManager(path: string) {
 
 async function record(update: HistoryUpdate, item: HistoryItem) {
   await update((draft) => {
-    draft.items.unshift(item)
-    if (draft.items.length > 100) draft.items.splice(100)
+    const index = draft.items.findIndex((existing) => existing.id === item.id)
+    if (index >= 0) {
+      draft.items[index] = { ...draft.items[index], ...item }
+    } else {
+      draft.items.unshift(item)
+      if (draft.items.length > 100) draft.items.splice(100)
+    }
   })
 }
 
@@ -456,7 +464,7 @@ async function uploadCommand(
 ) {
   let localPath: string | undefined
   let serverPath = ""
-  let recorded = false
+  let id: string | undefined
   try {
     let value = raw.trim()
     if (
@@ -472,8 +480,34 @@ async function uploadCommand(
     localPath = value || (await pickLocalFile())
     if (!localPath) return
 
-    const bytes = await readFile(localPath)
     const name = basename(localPath)
+    id = randomUUID()
+    const size = (await stat(localPath).catch(() => undefined))?.size ?? 0
+    await record(updateHistory, {
+      id,
+      direction: "upload",
+      status: "pending",
+      phase: "读取文件",
+      name,
+      serverPath,
+      localPath,
+      size,
+      at: Date.now(),
+    })
+
+    const bytes = await readFile(localPath)
+    await record(updateHistory, {
+      id,
+      direction: "upload",
+      status: "pending",
+      phase: "上传中",
+      name,
+      serverPath,
+      localPath,
+      size: bytes.byteLength,
+      at: Date.now(),
+    })
+
     const choice = chooseTransferMode(settings, getServerInfo())
     if (choice.fallback) {
       context.ui.toast.show({ message: choice.fallback, variant: "warning" })
@@ -497,16 +531,16 @@ async function uploadCommand(
 
     serverPath = result.path
     await record(updateHistory, {
-      id: randomUUID(),
+      id,
       direction: "upload",
       status: "success",
+      phase: undefined,
       name: result.name,
       serverPath: result.path,
       localPath,
       size: result.size,
       at: Date.now(),
     })
-    recorded = true
 
     if (settings.autoCopy ?? false) {
       try {
@@ -529,19 +563,18 @@ async function uploadCommand(
       })
     }
   } catch (error) {
-    if (!recorded) {
-      await record(updateHistory, {
-        id: randomUUID(),
-        direction: "upload",
-        status: "error",
-        name: localPath ? basename(localPath) : "上传",
-        serverPath,
-        localPath,
-        size: 0,
-        at: Date.now(),
-        message: message(error),
-      }).catch(() => undefined)
-    }
+    await record(updateHistory, {
+      id: id ?? randomUUID(),
+      direction: "upload",
+      status: "error",
+      phase: undefined,
+      name: localPath ? basename(localPath) : "上传",
+      serverPath,
+      localPath,
+      size: 0,
+      at: Date.now(),
+      message: message(error),
+    }).catch(() => undefined)
     context.ui.toast.show({
       message: `上传失败: ${message(error)}`,
       variant: "error",
@@ -557,12 +590,24 @@ async function downloadCommand(
   getServerInfo: () => ServerInfo | undefined,
 ) {
   let target: string | undefined
-  let recorded = false
+  let id: string | undefined
   try {
     target = raw.trim()
       ? await resolveServerPath(context, raw)
       : await pickServerFile(context)
     if (!target) return
+    id = randomUUID()
+
+    await record(updateHistory, {
+      id,
+      direction: "download",
+      status: "pending",
+      phase: "下载中",
+      name: basename(target),
+      serverPath: target,
+      size: 0,
+      at: Date.now(),
+    })
 
     const choice = chooseTransferMode(settings, getServerInfo())
     if (choice.fallback) {
@@ -585,18 +630,29 @@ async function downloadCommand(
       result = await downloadBasic(context, target)
     }
 
+    await record(updateHistory, {
+      id,
+      direction: "download",
+      status: "pending",
+      phase: "保存中",
+      name: result.name,
+      serverPath: target,
+      size: result.size,
+      at: Date.now(),
+    })
+
     const localPath = await saveDownload(context, result.name, result.data, result.size, settings)
     await record(updateHistory, {
-      id: randomUUID(),
+      id,
       direction: "download",
       status: "success",
+      phase: undefined,
       name: result.name,
       serverPath: target,
       localPath,
       size: result.size,
       at: Date.now(),
     })
-    recorded = true
 
     context.ui.toast.show({
       message: `已下载到 ${localPath}`,
@@ -614,19 +670,18 @@ async function downloadCommand(
       }
     }
   } catch (error) {
-    if (!recorded) {
-      const requested = target ?? raw.trim()
-      await record(updateHistory, {
-        id: randomUUID(),
-        direction: "download",
-        status: "error",
-        name: requested ? basename(requested) : "下载",
-        serverPath: requested,
-        size: 0,
-        at: Date.now(),
-        message: message(error),
-      }).catch(() => undefined)
-    }
+    const requested = target ?? raw.trim()
+    await record(updateHistory, {
+      id: id ?? randomUUID(),
+      direction: "download",
+      status: "error",
+      phase: undefined,
+      name: requested ? basename(requested) : "下载",
+      serverPath: requested,
+      size: 0,
+      at: Date.now(),
+      message: message(error),
+    }).catch(() => undefined)
     context.ui.toast.show({
       message: `下载失败: ${message(error)}`,
       variant: "error",
@@ -640,6 +695,10 @@ async function downloadCommand(
 
 function onHistoryItem(context: any, item: HistoryItem, settings: ClientSettings) {
   try {
+    if (item.status === "pending") {
+      context.ui.toast.show({ message: "传输正在进行中，请稍候", variant: "info" })
+      return
+    }
     if (!succeeded(item)) {
       const label = item.direction === "upload" ? "上传" : "下载"
       context.ui.toast.show({
@@ -685,7 +744,7 @@ async function showAllHistory(context: any, history: HistoryState, settings: Cli
   const selected = await context.ui.dialog.select({
     title: "上传 / 下载历史",
     options: items.map((item) => ({
-      title: `${succeeded(item) ? "✓" : "✗"} ${item.direction === "upload" ? "↑" : "↓"} ${item.name}  ${formatTime(item.at)}`,
+      title: `${item.status === "pending" ? "…" : succeeded(item) ? "✓" : "✗"} ${item.direction === "upload" ? "↑" : "↓"} ${item.name}  ${formatTime(item.at)}`,
       value: item,
     })),
     search: (query: string, all: Array<{ title: string; value: HistoryItem }>) =>
@@ -1039,6 +1098,12 @@ function FilesWidget(props: {
   serverInfo: () => ServerInfo | undefined
 }) {
   const [busy, setBusy] = createSignal(false)
+  const [tick, setTick] = createSignal(0)
+  createEffect(() => {
+    if (!props.history.items.some((item) => item.status === "pending")) return
+    const timer = setInterval(() => setTick((value) => value + 1), 120)
+    return () => clearInterval(timer)
+  })
   const lastUpload = () =>
     props.history.items.find(
       (item) => item.direction === "upload" && succeeded(item),
@@ -1092,21 +1157,16 @@ function FilesWidget(props: {
 
   return (
     <box flexDirection="column" gap={1}>
-      <text fg={COLOR_DIVIDER}>{"─".repeat(30)}</text>
-
       <box flexDirection="row" justifyContent="space-between">
         <text>📦 文件传输</text>
-        <box onMouseUp={openFileSettings}>
-          <text fg={COLOR_MUTED}>⚙ 设置</text>
+        <box flexDirection="row" gap={2}>
+          <box onMouseUp={() => void upload()}>
+            <text fg={COLOR_UPLOAD}>{busy() ? "上传中..." : "⇡ 上传"}</text>
+          </box>
+          <box onMouseUp={openFileSettings}>
+            <text fg={COLOR_MUTED}>⚙ 设置</text>
+          </box>
         </box>
-      </box>
-
-      <box
-        onMouseUp={() => void upload()}
-        backgroundColor={COLOR_UPLOAD_BG}
-        paddingX={1}
-      >
-        <text fg="#dbeafe">{busy() ? "上传中..." : "⇡ 点击选择并上传文件"}</text>
       </box>
 
       <box flexDirection="column">
@@ -1154,17 +1214,29 @@ function FilesWidget(props: {
                 justifyContent="space-between"
               >
                 <box flexDirection="row" gap={1}>
-                  <text fg={statusColor(item)}>●</text>
+                  <Show
+                    when={item.status === "pending"}
+                    fallback={<text fg={statusColor(item)}>●</text>}
+                  >
+                    <text fg={COLOR_PENDING}>{SPINNER[tick() % SPINNER.length]}</text>
+                  </Show>
                   <text fg={directionColor(item.direction)}>
                     {item.direction === "upload" ? "↑" : "↓"}
                   </text>
                   <text>{truncate(item.name, 18)}</text>
                 </box>
-                <text fg={COLOR_MUTED}>
-                  {props.settings.showFileSize
-                    ? `${formatSize(item.size)}  ${formatTime(item.at)}`
-                    : formatTime(item.at)}
-                </text>
+                <Show
+                  when={item.status === "pending"}
+                  fallback={
+                    <text fg={COLOR_MUTED}>
+                      {props.settings.showFileSize
+                        ? `${formatSize(item.size)}  ${formatTime(item.at)}`
+                        : formatTime(item.at)}
+                    </text>
+                  }
+                >
+                  <text fg={COLOR_MUTED}>{item.phase ?? "进行中"}</text>
+                </Show>
               </box>
             )}
           </For>
@@ -1183,6 +1255,19 @@ export default Plugin.define({
   setup(context) {
     const [history, updateHistory] = context.storage.store("acme.files.history", {
       initial: { items: [] as HistoryItem[] },
+    })
+    // 插件重载后残留的进行中记录标记为中断，避免 spinner 永远转动
+    void updateHistory((draft) => {
+      draft.items = draft.items.map((item) =>
+        item.status === "pending"
+          ? {
+              ...item,
+              status: "error" as const,
+              phase: undefined,
+              message: "传输被中断（插件已重载）",
+            }
+          : item,
+      )
     })
     const [settings, updateSettings] = context.storage.store("acme.files.settings", {
       initial: { ...DEFAULT_CLIENT_SETTINGS } as ClientSettings,
